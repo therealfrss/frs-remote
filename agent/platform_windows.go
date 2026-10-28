@@ -135,11 +135,10 @@ func sunshineReq(method, path string, body any) ([]byte, error) {
 		return nil, err
 	}
 	req.SetBasicAuth(c.User, c.Pass)
+	// Fără Origin/Referer: Sunshine cere token CSRF doar cererilor de browser.
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Origin", base)
-	req.Header.Set("Referer", base+"/")
 	cl := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 60 * time.Second, // /api/pin ține cererea deschisă până termină Moonlight
 		Transport: &http.Transport{
 			// certificatul Sunshine e self-signed și e doar pe localhost
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -157,12 +156,49 @@ func sunshineReq(method, path string, body any) ([]byte, error) {
 	return out, nil
 }
 
+// sunshinePin: Moonlight a pornit împerecherea; găsim cererea în așteptare și îi dăm PIN-ul.
 func sunshinePin(pin, name string) error {
 	if len(pin) != 4 {
 		return fmt.Errorf("PIN invalid")
 	}
-	_, err := sunshineReq("POST", "/api/pin", map[string]string{"pin": pin, "name": name})
-	return err
+	var id string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := sunshineReq("GET", "/api/pin", nil)
+		if err != nil {
+			return err
+		}
+		var r struct {
+			Pairings []struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Address string `json:"address"`
+			} `json:"pairings"`
+		}
+		if err := json.Unmarshal(b, &r); err != nil {
+			return fmt.Errorf("răspuns Sunshine: %w", err)
+		}
+		if n := len(r.Pairings); n > 0 {
+			id = r.Pairings[n-1].ID
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if id == "" {
+		return fmt.Errorf("Sunshine nu a primit cererea de la Moonlight (verifică dacă serviciul Sunshine rulează pe PC)")
+	}
+	b, err := sunshineReq("POST", "/api/pin", map[string]string{"pairing_id": id, "pin": pin, "name": name})
+	if err != nil {
+		return err
+	}
+	var st struct {
+		Status bool `json:"status"`
+	}
+	json.Unmarshal(b, &st)
+	if !st.Status {
+		return fmt.Errorf("Sunshine a refuzat PIN-ul")
+	}
+	return nil
 }
 
 func sunshineConfig() (map[string]any, error) {
@@ -232,7 +268,76 @@ var (
 	procLockWorkStation = user32.NewProc("LockWorkStation")
 )
 
+// Sunshine identifică monitoarele după un ID propriu, pe care îl scrie în log la pornire.
+func sunshineLog() string {
+	return filepath.Join(filepath.Dir(sunshineExe()), "config", "sunshine.log")
+}
+
 func listMonitors() ([]Monitor, error) {
+	if mons, err := monitorsFromSunshineLog(); err == nil && len(mons) > 0 {
+		return mons, nil
+	} else if err != nil {
+		log.Printf("monitoare din logul Sunshine: %v", err)
+	}
+	return listMonitorsWin32()
+}
+
+func monitorsFromSunshineLog() ([]Monitor, error) {
+	b, err := os.ReadFile(sunshineLog())
+	if err != nil {
+		return nil, err
+	}
+	const marker = "Currently available display devices:"
+	i := bytes.LastIndex(b, []byte(marker))
+	if i < 0 {
+		return nil, fmt.Errorf("lista de monitoare lipsește din log")
+	}
+	rest := b[i+len(marker):]
+	j := bytes.IndexByte(rest, '[')
+	if j < 0 {
+		return nil, fmt.Errorf("format necunoscut")
+	}
+	var devs []map[string]any
+	if err := json.NewDecoder(bytes.NewReader(rest[j:])).Decode(&devs); err != nil {
+		return nil, err
+	}
+	str := func(m map[string]any, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := m[k].(string); ok && v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	var out []Monitor
+	for _, d := range devs {
+		id := str(d, "device_id", "m_device_id")
+		if id == "" {
+			continue
+		}
+		info, _ := d["info"].(map[string]any)
+		if info == nil {
+			info, _ = d["m_info"].(map[string]any)
+		}
+		if info == nil { // monitor inactiv
+			continue
+		}
+		primary, _ := info["primary"].(bool)
+		label := str(d, "friendly_name", "m_friendly_name")
+		disp := str(d, "display_name", "m_display_name")
+		if label == "" {
+			label = disp
+		}
+		out = append(out, Monitor{
+			ID:      id,
+			Name:    fmt.Sprintf("Monitor %d – %s", len(out)+1, label),
+			Primary: primary,
+		})
+	}
+	return out, nil
+}
+
+func listMonitorsWin32() ([]Monitor, error) {
 	var out []Monitor
 	for i := uint32(0); i < 16; i++ {
 		var d displayDevice

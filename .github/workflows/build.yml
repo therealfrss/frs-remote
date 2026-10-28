@@ -1,0 +1,126 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_VERSION: 0.1.${{ github.run_number }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Dependențe Go
+        working-directory: agent
+        run: |
+          go get tailscale.com@latest fyne.io/systray@latest golang.design/x/clipboard@latest golang.org/x/sys@latest
+          go mod tidy
+          go vet ./...
+
+      - name: Compilează agentul
+        working-directory: agent
+        run: |
+          mkdir -p ../build/windows
+          go build -trimpath -ldflags "-s -w -H windowsgui -X main.Version=$APP_VERSION" -o ../build/windows/frsremote.exe .
+
+      - name: Ia installerul Sunshine (serverul de stream)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(gh release view -R LizardByte/Sunshine --json tagName -q .tagName)
+          ASSET=$(gh release view -R LizardByte/Sunshine --json assets -q '.assets[].name' | grep -iE 'windows.*installer.*\.exe$' | head -1)
+          echo "Sunshine $TAG -> $ASSET"
+          test -n "$ASSET"
+          gh release download "$TAG" -R LizardByte/Sunshine -p "$ASSET" -O build/windows/sunshine-setup.exe
+          echo "$TAG" > build/windows/sunshine-version.txt
+
+      - name: Installer (Inno Setup)
+        run: |
+          ISCC="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if [ ! -f "$ISCC" ]; then choco install innosetup -y --no-progress; fi
+          "$ISCC" -DAppVersion=$APP_VERSION packaging/windows/frsremote.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*.exe
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Dependențe Go
+        working-directory: agent
+        run: |
+          go get tailscale.com@latest fyne.io/systray@latest golang.design/x/clipboard@latest golang.org/x/sys@latest
+          go mod tidy
+          go vet ./...
+
+      - name: Compilează agentul
+        working-directory: agent
+        env:
+          CGO_ENABLED: "1"
+          MACOSX_DEPLOYMENT_TARGET: "13.0"
+        run: |
+          mkdir -p ../build/mac
+          go build -trimpath -ldflags "-s -w -X main.Version=$APP_VERSION" -o ../build/mac/frsremote .
+
+      - name: Ia Moonlight (clientul de stream)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(gh release view -R moonlight-stream/moonlight-qt --json tagName -q .tagName)
+          ASSET=$(gh release view -R moonlight-stream/moonlight-qt --json assets -q '.assets[].name' | grep -iE '\.dmg$' | head -1)
+          echo "Moonlight $TAG -> $ASSET"
+          test -n "$ASSET"
+          gh release download "$TAG" -R moonlight-stream/moonlight-qt -p "$ASSET" -O build/mac/moonlight.dmg
+          MNT=$(mktemp -d)
+          hdiutil attach -nobrowse -readonly -mountpoint "$MNT" build/mac/moonlight.dmg
+          ditto "$MNT/Moonlight.app" build/mac/Moonlight.app
+          hdiutil detach "$MNT"
+
+      - name: App + DMG
+        run: |
+          chmod +x packaging/mac/build_app.sh
+          packaging/mac/build_app.sh "$APP_VERSION" build/mac/frsremote build/mac/Moonlight.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: dist/*.dmg
+
+  release:
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+      - name: Publică în Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest -R "$GITHUB_REPOSITORY" -y --cleanup-tag || true
+          gh release create latest -R "$GITHUB_REPOSITORY" --prerelease \
+            --title "FRS Remote $APP_VERSION" \
+            --notes "Build automat din commit ${GITHUB_SHA::7}." \
+            out/windows/*.exe out/mac/*.dmg

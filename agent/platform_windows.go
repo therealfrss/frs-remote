@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -112,10 +113,14 @@ func setupSunshineCreds() error {
 	if err != nil {
 		return fmt.Errorf("sunshine --creds: %w", err)
 	}
-	// repornește serviciul ca să ia datele noi
-	hidden(exec.Command("sc", "stop", "SunshineService")).Run()
-	time.Sleep(2 * time.Second)
-	hidden(exec.Command("sc", "start", "SunshineService")).Run()
+	// Sunshine își instalează serviciul pe „manual”; îl punem pe automat ca să
+	// pornească singur după fiecare restart al PC-ului, apoi îl repornim.
+	hidden(exec.Command("sc", "config", "SunshineService", "start=", "auto")).Run()
+	hidden(exec.Command("sc", "failure", "SunshineService", "reset=", "86400", "actions=", "restart/5000/restart/5000/restart/5000")).Run()
+	hidden(exec.Command("net", "stop", "SunshineService")).Run()
+	if out, err := hidden(exec.Command("net", "start", "SunshineService")).CombinedOutput(); err != nil {
+		log.Printf("net start SunshineService: %v %s", err, bytes.TrimSpace(out))
+	}
 	return nil
 }
 
@@ -129,7 +134,7 @@ func sunshineReq(method, path string, body any) ([]byte, error) {
 		b, _ := json.Marshal(body)
 		rd = bytes.NewReader(b)
 	}
-	const base = "https://localhost:47990"
+	const base = "https://127.0.0.1:47990"
 	req, err := http.NewRequest(method, base+path, rd)
 	if err != nil {
 		return nil, err
@@ -146,6 +151,9 @@ func sunshineReq(method, path string, body any) ([]byte, error) {
 	}
 	resp, err := cl.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "refused") {
+			return nil, fmt.Errorf("serverul de stream (Sunshine) nu rulează pe PC")
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()

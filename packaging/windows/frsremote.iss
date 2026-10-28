@@ -26,15 +26,15 @@ WizardStyle=modern
 
 [Files]
 Source: "..\..\build\windows\frsremote.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\build\windows\sunshine-setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+Source: "..\..\build\windows\sunshine.msi"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\FRS Remote"; Filename: "{app}\frsremote.exe"
 Name: "{autostartup}\FRS Remote"; Filename: "{app}\frsremote.exe"
 
 [Run]
-; 1. Sunshine, instalat silențios (serviciu Windows + reguli firewall)
-Filename: "{tmp}\sunshine-setup.exe"; Parameters: "/S"; StatusMsg: "Instalez serverul de stream..."; Flags: waituntilterminated
+; 1. Sunshine (MSI), instalat silențios: serviciu Windows + reguli firewall
+Filename: "{sys}\msiexec.exe"; Parameters: "/i ""{tmp}\sunshine.msi"" /qn /norestart"; StatusMsg: "Instalez serverul de stream..."; Flags: waituntilterminated
 ; 2. Date de acces pentru Sunshine, generate automat
 Filename: "{app}\frsremote.exe"; Parameters: "setup-sunshine"; StatusMsg: "Configurez serverul de stream..."; Flags: runhidden waituntilterminated
 ; 3. Firewall pentru conexiunea directă Mac <-> PC

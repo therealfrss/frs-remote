@@ -60,6 +60,14 @@ func sunshineExe() string {
 	if pf == "" {
 		pf = `C:\Program Files`
 	}
+	for _, p := range []string{
+		filepath.Join(pf, "Sunshine", "sunshine.exe"),
+		filepath.Join(pf, "LizardByte", "Sunshine", "sunshine.exe"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
 	return filepath.Join(pf, "Sunshine", "sunshine.exe")
 }
 

@@ -31,17 +31,25 @@ func (a *App) clipboardLoop(ctx context.Context) {
 		log.Printf("clipboard indisponibil: %v", err)
 		return
 	}
-	text := clipboard.Watch(ctx, clipboard.FmtText)
-	img := clipboard.Watch(ctx, clipboard.FmtImage)
+	ch := clipboard.Watch(ctx, clipboard.FmtText, clipboard.FmtImage)
 	for {
-		var format string
-		var b []byte
+		var d clipboard.Data
+		var ok bool
 		select {
 		case <-ctx.Done():
 			return
-		case b = <-text:
-			format = "text"
-		case b = <-img:
+		case d, ok = <-ch:
+			if !ok {
+				return
+			}
+		}
+		// parolele copiate din password manager nu pleacă de pe calculator
+		if d.Sensitive {
+			continue
+		}
+		b := d.Bytes
+		format := "text"
+		if d.Format == clipboard.FmtImage {
 			format = "image"
 		}
 		if len(b) == 0 || !a.clipEnabled() {
@@ -74,5 +82,7 @@ func (a *App) applyRemoteClipboard(format string, b []byte) {
 	if format == "image" {
 		f = clipboard.FmtImage
 	}
-	clipboard.Write(f, b)
+	if _, err := clipboard.Write(context.Background(), f, b); err != nil {
+		log.Printf("clipboard write: %v", err)
+	}
 }
